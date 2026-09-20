@@ -35,18 +35,6 @@ function cleanText(
 async function fetchHtml(
   url: string
 ): Promise<string> {
-  /*
-   * IMPORTANT:
-   *
-   * One request.
-   * No retries.
-   * No detail-page requests.
-   *
-   * If GA is unavailable, we fail
-   * gracefully rather than repeatedly
-   * hammering it.
-   */
-
   const response =
     await fetch(url, {
       headers: {
@@ -62,7 +50,7 @@ async function fetchHtml(
 
   if (!response.ok) {
     throw new Error(
-      `${url} returned HTTP ${response.status}`
+      `GA returned HTTP ${response.status}`
     );
   }
 
@@ -82,12 +70,6 @@ function buildSearchUrl(
       weekday,
     });
 
-  /*
-   * Don't add paged=1.
-   * GA's normal first page does not
-   * need it.
-   */
-
   if (page > 1) {
     params.set(
       "paged",
@@ -101,204 +83,14 @@ function buildSearchUrl(
   );
 }
 
-function absoluteUrl(
-  href: string
+function parseLocation(
+  location: string
 ) {
-  try {
-    return new URL(
-      href,
-      GA_BASE
-    ).toString();
-  } catch {
-    return href;
-  }
-}
-
-function usableZoomUrl(
-  href: string
-) {
-  return /^https:\/\/[^/]*zoom\.us\/j\/\d+/i.test(
-    href
-  );
-}
-
-function extractZoomId(
-  text: string
-) {
-  const match =
-    text.match(
-      /Zoom\s*(?:Meeting\s*)?ID\s*:?\s*([0-9][0-9\s-]{8,20})/i
-    );
-
-  if (!match) {
-    return null;
-  }
-
-  const id =
-    match[1].replace(
-      /\D/g,
-      ""
-    );
-
-  if (
-    id.length < 9 ||
-    id.length > 12
-  ) {
-    return null;
-  }
-
-  return id;
-}
-
-function extractPassword(
-  text: string
-) {
-  const match =
-    text.match(
-      /(?:Access\s*Code(?:\/Password)?|Passcode|Password)\s*:?\s*([A-Za-z0-9!@#$%^&*._-]+)/i
-    );
-
-  if (!match) {
-    return null;
-  }
-
-  const value =
-    match[1].trim();
-
-  /*
-   * GA occasionally places link text
-   * immediately after the Password
-   * label. These are not passwords.
-   */
-  const invalidValues =
-    new Set([
-      "link",
-      "click",
-      "here",
-      "zoom",
-      "none",
-      "n/a",
-    ]);
-
-  if (
-    invalidValues.has(
-      value.toLowerCase()
-    )
-  ) {
-    return null;
-  }
-
-  return value;
-}
-
-function extractTime(
-  text: string
-) {
-  /*
-   * Examples:
-   *
-   * 07:00 PM
-   * 08:00 PM - 09:15 PM
-   */
-
-  const match =
-    text.match(
-      /\b(\d{1,2}:\d{2}\s*[AP]M)(?:\s*-\s*(\d{1,2}:\d{2}\s*[AP]M))?/i
-    );
-
-  return {
-    startTime:
-      match?.[1] ?? null,
-
-    endTime:
-      match?.[2] ?? null,
-  };
-}
-
-function extractTimezone(
-  text: string
-) {
-  const match =
-    text.match(
-      /\b(Eastern|Central|Mountain|Pacific)\s+(?:(?:Standard|Daylight)\s+)?Time\b/i
-    );
-
-  return (
-    match?.[0] ?? null
-  );
-}
-
-function extractLocation(
-  text: string,
-  weekday: string
-) {
-  /*
-   * Search cards normally start with
-   * something resembling:
-   *
-   * Charlotte, North Carolina,
-   * United States – Friday
-   */
-
-  const escapedWeekday =
-    weekday.replace(
-      /[.*+?^${}()|[\]\\]/g,
-      "\\$&"
-    );
-
-  const match =
-    text.match(
-      new RegExp(
-        `(.+?)\\s*[–—-]\\s*${escapedWeekday}\\b`,
-        "i"
-      )
-    );
-
-  if (!match) {
-    return {
-      location: null,
-      city: null,
-      state: null,
-      country: null,
-    };
-  }
-
-  let location =
-    cleanText(
-      match[1]
-    );
-
-  /*
-   * Strip common garbage that may
-   * precede the actual result title.
-   */
-  const markers = [
-    "My Account",
-    "Search Results",
-  ];
-
-  for (
-    const marker
-    of markers
-  ) {
-    const index =
-      location.lastIndexOf(
-        marker
-      );
-
-    if (index >= 0) {
-      location =
-        location
-          .slice(
-            index +
-              marker.length
-          )
-          .trim();
-    }
-  }
+  const cleaned =
+    cleanText(location);
 
   const parts =
-    location
+    cleaned
       .split(",")
       .map(
         (part) =>
@@ -319,9 +111,12 @@ function extractLocation(
     parts.length >= 3
   ) {
     city =
-      parts[
-        parts.length - 3
-      ];
+      parts
+        .slice(
+          0,
+          parts.length - 2
+        )
+        .join(", ");
 
     state =
       parts[
@@ -335,10 +130,10 @@ function extractLocation(
   } else if (
     parts.length === 2
   ) {
-    city =
+    state =
       parts[0];
 
-    state =
+    country =
       parts[1];
   } else if (
     parts.length === 1
@@ -348,268 +143,135 @@ function extractLocation(
   }
 
   return {
-    location,
+    location:
+      cleaned || null,
+
     city,
     state,
     country,
   };
 }
 
-function parseMeetingBlock(
-  $: cheerio.CheerioAPI,
-  element: any,
-  weekday: string
-): GAMeeting | null {
-  const block =
-    $(element);
-
-  const text =
-    cleanText(
-      block.text()
+function parseZoomId(
+  text: string
+) {
+  const match =
+    text.match(
+      /Zoom\s*(?:Meeting\s*)?ID\s*:?\s*([0-9][0-9\s#-]{7,22})/i
     );
 
-  /*
-   * A real meeting result should at
-   * minimum contain the requested
-   * weekday and a meeting time.
-   */
+  if (!match) {
+    return null;
+  }
+
+  const value =
+    match[1].replace(
+      /\D/g,
+      ""
+    );
+
   if (
-    !new RegExp(
-      `\\b${weekday}\\b`,
-      "i"
-    ).test(text)
+    value.length < 9 ||
+    value.length > 12
   ) {
     return null;
   }
 
-  const {
-    startTime,
-    endTime,
-  } = extractTime(text);
-
-  if (!startTime) {
-    return null;
-  }
-
-  const location =
-    extractLocation(
-      text,
-      weekday
-    );
-
-  let sourceUrl:
-    string | null = null;
-
-  let zoomUrl:
-    string | null = null;
-
-  block
-    .find("a")
-    .each(
-      (
-        _,
-        anchor
-      ) => {
-        const href =
-          $(anchor).attr(
-            "href"
-          );
-
-        if (!href) {
-          return;
-        }
-
-        const absolute =
-          absoluteUrl(
-            href
-          );
-
-        if (
-          !sourceUrl &&
-          absolute.startsWith(
-            `${GA_BASE}/find-a-meeting/`
-          ) &&
-          absolute !==
-            `${GA_BASE}/find-a-meeting/`
-        ) {
-          sourceUrl =
-            absolute;
-        }
-
-        if (
-          !zoomUrl &&
-          usableZoomUrl(
-            absolute
-          )
-        ) {
-          zoomUrl =
-            absolute;
-        }
-      }
-    );
-
-  /*
-   * Without a source URL, this is
-   * probably not an individual search
-   * result.
-   */
-  if (!sourceUrl) {
-    return null;
-  }
-
-  const zoomId =
-    extractZoomId(
-      text
-    );
-
-  const password =
-    extractPassword(
-      text
-    );
-
-  if (
-    !zoomUrl &&
-    zoomId
-  ) {
-    zoomUrl =
-      `https://zoom.us/j/${zoomId}`;
-  }
-
-  return {
-    ...location,
-
-    weekday,
-
-    startTime,
-    endTime,
-
-    timezoneText:
-      extractTimezone(
-        text
-      ),
-
-    zoomId,
-    password,
-    zoomUrl,
-
-    sourceUrl,
-  };
+  return value;
 }
 
-function findMeetingBlocks(
-  $: cheerio.CheerioAPI,
-  weekday: string
+function parsePassword(
+  text: string
+) {
+  const match =
+    text.match(
+      /(?:Access\s*Code(?:\/Password)?|Passcode|Password)\s*:?\s*([A-Za-z0-9!@#$%^&*._-]+)/i
+    );
+
+  if (!match) {
+    return null;
+  }
+
+  const value =
+    match[1]
+      .replace(
+        /#+$/,
+        ""
+      )
+      .trim();
+
+  if (!value) {
+    return null;
+  }
+
+  const badValues =
+    new Set([
+      "link",
+      "click",
+      "here",
+      "zoom",
+      "none",
+      "n/a",
+    ]);
+
+  if (
+    badValues.has(
+      value.toLowerCase()
+    )
+  ) {
+    return null;
+  }
+
+  return value;
+}
+
+function parseTimezone(
+  text: string
 ) {
   /*
-   * Rather than assuming one specific
-   * WordPress class name, start from
-   * links to individual meeting pages
-   * and walk upward until we find the
-   * smallest useful result container.
+   * GA uses several variations:
+   *
+   * Eastern Time
+   * Eastern Time Zone
+   * Central time
+   * Pacific Standard Time
    */
 
-  const blocks: any[] =
-    [];
+  const match =
+    text.match(
+      /\b(Eastern|Central|Mountain|Pacific)\s+(?:(?:Standard|Daylight)\s+)?Time(?:\s+Zone)?\b/i
+    );
 
-  const seen =
-    new Set<any>();
-
-  $(
-    `a[href*="/find-a-meeting/"]`
-  ).each(
-    (
-      _,
-      anchor
-    ) => {
-      const href =
-        $(anchor).attr(
-          "href"
-        );
-
-      if (!href) {
-        return;
-      }
-
-      const absolute =
-        absoluteUrl(
-          href
-        );
-
-      if (
-        absolute ===
-        `${GA_BASE}/find-a-meeting/`
-      ) {
-        return;
-      }
-
-      let current =
-        $(anchor).parent();
-
-      let chosen:
-        any = null;
-
-      /*
-       * Walk upward only a handful of
-       * levels. We want the smallest
-       * container containing this
-       * meeting's time/details.
-       */
-      for (
-        let depth = 0;
-        depth < 7 &&
-        current.length;
-        depth++
-      ) {
-        const text =
-          cleanText(
-            current.text()
-          );
-
-        const hasWeekday =
-          new RegExp(
-            `\\b${weekday}\\b`,
-            "i"
-          ).test(text);
-
-        const hasTime =
-          /\b\d{1,2}:\d{2}\s*[AP]M\b/i.test(
-            text
-          );
-
-        if (
-          hasWeekday &&
-          hasTime
-        ) {
-          chosen =
-            current.get(0);
-
-          break;
-        }
-
-        current =
-          current.parent();
-      }
-
-      if (
-        chosen &&
-        !seen.has(chosen)
-      ) {
-        seen.add(chosen);
-
-        blocks.push(
-          chosen
-        );
-      }
-    }
+  return (
+    match?.[0] ??
+    null
   );
-
-  return blocks;
 }
 
-function parseSearchPage(
-  html: string,
-  weekday: string
+function parseZoomUrl(
+  text: string
 ) {
+  const match =
+    text.match(
+      /https:\/\/[^\s"'<>]*zoom\.us\/j\/\d+[^\s"'<>]*/i
+    );
+
+  if (!match) {
+    return null;
+  }
+
+  return match[0]
+    .replace(
+      /[),.;]+$/,
+      ""
+    );
+}
+
+function parseSearchResults(
+  html: string,
+  weekday: string,
+  searchUrl: string
+): GAMeeting[] {
   const $ =
     cheerio.load(html);
 
@@ -617,48 +279,226 @@ function parseSearchPage(
     "script, style, nav, footer, form"
   ).remove();
 
-  const blocks =
-    findMeetingBlocks(
-      $,
-      weekday
+  /*
+   * Grab visible page text.
+   *
+   * We then isolate everything after
+   * "Search Results".
+   */
+  const bodyText =
+    cleanText(
+      $("body").text()
     );
+
+  const marker =
+    bodyText.search(
+      /Search Results/i
+    );
+
+  if (marker < 0) {
+    console.warn(
+      `GA ${weekday}: Search Results marker not found`
+    );
+
+    return [];
+  }
+
+  let resultsText =
+    bodyText.slice(
+      marker +
+        "Search Results".length
+    );
+
+  /*
+   * Remove the explanatory footer.
+   */
+  const footerMarker =
+    resultsText.search(
+      /\bClosed Meeting\s+Only those with a gambling problem/i
+    );
+
+  if (
+    footerMarker >= 0
+  ) {
+    resultsText =
+      resultsText.slice(
+        0,
+        footerMarker
+      );
+  }
+
+  /*
+   * GA results follow a very useful
+   * textual pattern:
+   *
+   * LOCATION - WEEKDAY
+   * Time: ...
+   *
+   * The next meeting starts when the
+   * next LOCATION - DAY Time: appears.
+   *
+   * We deliberately parse the text
+   * rather than relying on GA's DOM
+   * structure.
+   */
+  const meetingStartRegex =
+    /(.+?)\s*[-–—]\s*(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)(?:\s*\([^)]*\))?\s*Time\s*:/gi;
+
+  const matches =
+    Array.from(
+      resultsText.matchAll(
+        meetingStartRegex
+      )
+    );
+
+  if (
+    matches.length === 0
+  ) {
+    console.warn(
+      `GA ${weekday}: no meeting text patterns found`
+    );
+
+    return [];
+  }
 
   const meetings:
     GAMeeting[] = [];
 
-  const seenSources =
-    new Set<string>();
-
   for (
-    const block
-    of blocks
+    let i = 0;
+    i < matches.length;
+    i++
   ) {
-    const meeting =
-      parseMeetingBlock(
-        $,
-        block,
-        weekday
-      );
+    const match =
+      matches[i];
 
-    if (!meeting) {
-      continue;
-    }
+    const detectedWeekday =
+      match[2];
 
+    /*
+     * Search results should already
+     * be filtered, but this prevents
+     * unrelated days from leaking in.
+     */
     if (
-      seenSources.has(
-        meeting.sourceUrl
-      )
+      detectedWeekday.toLowerCase() !==
+      weekday.toLowerCase()
     ) {
       continue;
     }
 
-    seenSources.add(
-      meeting.sourceUrl
-    );
+    const locationText =
+      cleanText(
+        match[1]
+      );
 
-    meetings.push(
-      meeting
-    );
+    /*
+     * If the regex consumed pagination
+     * text before the location, keep
+     * only the text after it.
+     */
+    const cleanedLocation =
+      locationText
+        .replace(
+          /^.*?(?:Reset\s+)?(?=[A-Za-z])/,
+          ""
+        )
+        .trim();
+
+    const detailsStart =
+      (match.index ?? 0) +
+      match[0].length;
+
+    const detailsEnd =
+      i + 1 <
+      matches.length
+        ? matches[
+            i + 1
+          ].index ??
+          resultsText.length
+        : resultsText.length;
+
+    const details =
+      cleanText(
+        resultsText.slice(
+          detailsStart,
+          detailsEnd
+        )
+      );
+
+    const timeMatch =
+      details.match(
+        /^\s*(\d{1,2}:\d{2}\s*[AP]M)(?:\s*-\s*(\d{1,2}:\d{2}\s*[AP]M))?/i
+      );
+
+    if (!timeMatch) {
+      continue;
+    }
+
+    const startTime =
+      timeMatch[1];
+
+    const endTime =
+      timeMatch[2] ??
+      null;
+
+    const location =
+      parseLocation(
+        cleanedLocation
+      );
+
+    const zoomId =
+      parseZoomId(
+        details
+      );
+
+    let zoomUrl =
+      parseZoomUrl(
+        details
+      );
+
+    if (
+      !zoomUrl &&
+      zoomId
+    ) {
+      zoomUrl =
+        `https://zoom.us/j/${zoomId}`;
+    }
+
+    /*
+     * Search-page-only mode means we
+     * don't necessarily have a unique
+     * GA detail URL for every result.
+     *
+     * Link back to the exact GA search
+     * page instead.
+     */
+    meetings.push({
+      ...location,
+
+      weekday:
+        detectedWeekday,
+
+      startTime,
+      endTime,
+
+      timezoneText:
+        parseTimezone(
+          details
+        ),
+
+      zoomId,
+
+      password:
+        parsePassword(
+          details
+        ),
+
+      zoomUrl,
+
+      sourceUrl:
+        searchUrl,
+    });
   }
 
   return meetings;
@@ -674,13 +514,17 @@ export async function scrapeGAMeetingsForDay(
     new Set<string>();
 
   /*
-   * Safety ceiling.
+   * IMPORTANT:
    *
-   * In normal operation we should
-   * encounter an empty/repeating page
-   * long before this.
+   * Because the weekday filter should
+   * dramatically reduce results, we
+   * expect only a small number of
+   * search pages.
+   *
+   * Hard ceiling protects GA from an
+   * accidental pagination loop.
    */
-  const MAX_PAGES = 15;
+  const MAX_PAGES = 10;
 
   for (
     let page = 1;
@@ -694,7 +538,7 @@ export async function scrapeGAMeetingsForDay(
       );
 
     console.log(
-      `GA ${weekday}: loading search page ${page}`
+      `GA ${weekday}: search page ${page}`
     );
 
     let html: string;
@@ -706,27 +550,22 @@ export async function scrapeGAMeetingsForDay(
         );
     } catch (error) {
       console.error(
-        `GA ${weekday}: search page ${page} failed`,
+        `GA ${weekday}: page ${page} failed`,
         error
       );
 
-      /*
-       * No retries.
-       *
-       * Return whatever we successfully
-       * collected before the failure.
-       */
       break;
     }
 
     const pageMeetings =
-      parseSearchPage(
+      parseSearchResults(
         html,
-        weekday
+        weekday,
+        url
       );
 
     console.log(
-      `GA ${weekday}: page ${page} produced ${pageMeetings.length} meetings`
+      `GA ${weekday}: found ${pageMeetings.length} meetings on page ${page}`
     );
 
     if (
@@ -736,45 +575,51 @@ export async function scrapeGAMeetingsForDay(
       break;
     }
 
-    let newMeetings = 0;
+    let added = 0;
 
     for (
       const meeting
       of pageMeetings
     ) {
+      /*
+       * We no longer have a unique
+       * detail-page URL, so construct
+       * a meeting identity from the
+       * actual listing.
+       */
+      const key =
+        [
+          meeting.location,
+          meeting.weekday,
+          meeting.startTime,
+          meeting.zoomId,
+        ].join("|");
+
       if (
-        seen.has(
-          meeting.sourceUrl
-        )
+        seen.has(key)
       ) {
         continue;
       }
 
-      seen.add(
-        meeting.sourceUrl
-      );
+      seen.add(key);
 
       meetings.push(
         meeting
       );
 
-      newMeetings++;
+      added++;
     }
 
     /*
-     * If an alleged next page just
-     * repeats the previous results,
-     * stop immediately.
+     * Pagination repeated itself.
      */
-    if (
-      newMeetings === 0
-    ) {
+    if (added === 0) {
       break;
     }
   }
 
   console.log(
-    `GA ${weekday}: ${meetings.length} total meetings`
+    `GA ${weekday}: ${meetings.length} total`
   );
 
   return meetings;

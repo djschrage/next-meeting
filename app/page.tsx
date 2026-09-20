@@ -242,56 +242,44 @@ export default function Home() {
     string | null
   >(null);
 
-  const localTimezone =
-    useMemo(() => {
-      try {
-        return Intl.DateTimeFormat()
-          .resolvedOptions()
-          .timeZone;
-      } catch {
-        return null;
-      }
-    }, []);
-
-  async function loadMeetings() {
-    try {
-      setLoading(true);
-      setError(null);
-
-      const response =
-        await fetch(
-          "/api/meetings?hours=12"
-        );
-
-      const data: ApiResponse =
-        await response.json();
-
-      if (
-        !response.ok ||
-        !data.success
-      ) {
-        throw new Error(
-          data.error ??
-            "Unable to load meetings."
-        );
-      }
-
-      setMeetings(
-        data.meetings ?? []
-      );
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Unable to load meetings."
-      );
-    } finally {
-      setLoading(false);
-    }
-  }
-
   useEffect(() => {
-    loadMeetings();
+    async function load() {
+      try {
+        setLoading(true);
+
+        const response =
+          await fetch(
+            "/api/meetings?hours=12"
+          );
+
+        const data: ApiResponse =
+          await response.json();
+
+        if (
+          !response.ok ||
+          !data.success
+        ) {
+          throw new Error(
+            data.error ??
+              "Unable to load meetings."
+          );
+        }
+
+        setMeetings(
+          data.meetings ?? []
+        );
+      } catch (err) {
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Unable to load meetings."
+        );
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    load();
   }, []);
 
   useEffect(() => {
@@ -310,6 +298,17 @@ export default function Home() {
         interval
       );
   }, []);
+
+  const localTimezone =
+    useMemo(() => {
+      try {
+        return Intl.DateTimeFormat()
+          .resolvedOptions()
+          .timeZone;
+      } catch {
+        return null;
+      }
+    }, []);
 
   async function copyText(
     value: string,
@@ -440,8 +439,8 @@ export default function Home() {
             </div>
 
             <button
-              onClick={
-                loadMeetings
+              onClick={() =>
+                window.location.reload()
               }
             >
               Try again
@@ -503,9 +502,7 @@ export default function Home() {
                       meeting.startsAt
                     ).getTime() -
                       now <=
-                    30 *
-                      60 *
-                      1000;
+                    30 * 60 * 1000;
 
                   const embeddedPassword =
                     hasEmbeddedPassword(

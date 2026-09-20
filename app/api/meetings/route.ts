@@ -7,6 +7,9 @@ import {
   getUpcomingMeetings,
 } from "../../../lib/meetings";
 
+export const dynamic =
+  "force-dynamic";
+
 export async function GET(
   request: NextRequest
 ) {
@@ -16,10 +19,9 @@ export async function GET(
         "hours"
       );
 
-    let hours =
-      Number(
-        hoursParam ?? 12
-      );
+    let hours = Number(
+      hoursParam ?? 12
+    );
 
     if (
       !Number.isFinite(hours) ||
@@ -29,15 +31,10 @@ export async function GET(
     }
 
     /*
-     * Prevent somebody from asking
-     * our scraper for an absurdly
-     * large window.
+     * Keep the API bounded even if somebody manually
+     * requests a giant window.
      */
-    hours =
-      Math.min(
-        hours,
-        48
-      );
+    hours = Math.min(hours, 24);
 
     const meetings =
       await getUpcomingMeetings(
@@ -46,16 +43,11 @@ export async function GET(
 
     return NextResponse.json({
       success: true,
-
       generatedAt:
         new Date().toISOString(),
-
-      windowHours:
-        hours,
-
-      count:
-        meetings.length,
-
+      windowHours: hours,
+      datasetMeetings: 239,
+      count: meetings.length,
       meetings,
     });
   } catch (error) {
@@ -67,7 +59,6 @@ export async function GET(
     return NextResponse.json(
       {
         success: false,
-
         error:
           error instanceof Error
             ? error.message

@@ -1,20 +1,27 @@
 import { DateTime } from "luxon";
+import meetingData from "../data/ga-meetings.json";
+import { getMeetingTimezone } from "./timezones";
 
-import {
-  GAMeeting,
-  scrapeGAMeetingsForDay,
-} from "./ga-scraper";
+export type GAMeeting = {
+  location: string | null;
+  city: string | null;
+  state: string | null;
+  country: string | null;
+  weekday: string | null;
+  startTime: string | null;
+  endTime: string | null;
+  timezoneText: string | null;
+  zoomId: string | null;
+  password: string | null;
+  zoomUrl: string | null;
+  sourceUrl: string;
+};
 
-import {
-  getMeetingTimezone,
-} from "./timezones";
-
-export type UpcomingMeeting =
-  GAMeeting & {
-    timezone: string;
-    startsAt: string;
-    endsAt: string | null;
-  };
+export type UpcomingMeeting = GAMeeting & {
+  timezone: string;
+  startsAt: string;
+  endsAt: string | null;
+};
 
 const WEEKDAYS = [
   "Monday",
@@ -26,49 +33,31 @@ const WEEKDAYS = [
   "Sunday",
 ];
 
-function weekdayName(
-  date: DateTime
-) {
-  return WEEKDAYS[
-    date.weekday - 1
-  ];
+const STATIC_MEETINGS =
+  meetingData.meetings as GAMeeting[];
+
+function weekdayName(date: DateTime) {
+  return WEEKDAYS[date.weekday - 1];
 }
 
-function parseTime(
-  time: string
-): {
-  hour: number;
-  minute: number;
-} | null {
-  const match =
-    time.match(
-      /^(\d{1,2}):(\d{2})\s*([AP]M)$/i
-    );
+function parseTime(time: string) {
+  const match = time.match(
+    /^(\d{1,2}):(\d{2})\s*([AP]M)$/i
+  );
 
   if (!match) {
     return null;
   }
 
-  let hour =
-    Number(match[1]);
+  let hour = Number(match[1]);
+  const minute = Number(match[2]);
+  const period = match[3].toUpperCase();
 
-  const minute =
-    Number(match[2]);
-
-  const period =
-    match[3].toUpperCase();
-
-  if (
-    period === "PM" &&
-    hour !== 12
-  ) {
+  if (period === "PM" && hour !== 12) {
     hour += 12;
   }
 
-  if (
-    period === "AM" &&
-    hour === 12
-  ) {
+  if (period === "AM" && hour === 12) {
     hour = 0;
   }
 
@@ -79,179 +68,153 @@ function parseTime(
 }
 
 function getRelevantWeekdays(
-  startUtc: DateTime,
-  endUtc: DateTime
+  now: DateTime,
+  cutoff: DateTime
 ) {
   /*
-   * Eastern and Pacific give us
-   * the calendar-day boundaries
-   * covering the continental US.
+   * The dataset contains meetings across multiple
+   * US time zones.
    *
-   * Arizona/Hawaii/etc. are still
-   * covered by the resulting day
-   * set around a 12-hour window.
+   * A 12-hour UTC window can cross different local
+   * calendar days depending on the meeting's zone.
    */
-
   const zones = [
     "America/New_York",
+    "America/Chicago",
+    "America/Denver",
     "America/Los_Angeles",
+    "America/Phoenix",
+    "America/Anchorage",
+    "Pacific/Honolulu",
   ];
 
-  const weekdays =
-    new Set<string>();
+  const weekdays = new Set<string>();
 
   for (const zone of zones) {
-    const localStart =
-      startUtc.setZone(zone);
-
-    const localEnd =
-      endUtc.setZone(zone);
-
     weekdays.add(
-      weekdayName(
-        localStart
-      )
+      weekdayName(now.setZone(zone))
     );
 
     weekdays.add(
-      weekdayName(
-        localEnd
-      )
+      weekdayName(cutoff.setZone(zone))
     );
   }
 
-  return Array.from(
-    weekdays
-  );
+  return weekdays;
 }
 
-function candidateDatesForWeekday(
-  weekday: string,
-  now: DateTime
+function getMeetingStart(
+  meeting: GAMeeting,
+  timezone: string,
+  now: DateTime,
+  cutoff: DateTime
 ) {
+  if (
+    !meeting.startTime ||
+    !meeting.weekday
+  ) {
+    return null;
+  }
+
+  const parsed = parseTime(
+    meeting.startTime
+  );
+
+  if (!parsed) {
+    return null;
+  }
+
+  const localNow = now.setZone(timezone);
+
   /*
-   * Generate nearby UTC calendar
-   * dates whose weekday matches
-   * the GA meeting weekday.
-   *
-   * We only need a small envelope
-   * because the final UTC-window
-   * check determines whether the
-   * occurrence really belongs.
+   * Look slightly behind/ahead of the current local
+   * date so midnight and cross-time-zone cases work
+   * correctly.
    */
-
-  const dates: DateTime[] =
-    [];
-
   for (
     let offset = -1;
     offset <= 2;
     offset++
   ) {
-    const date =
-      now.plus({
-        days: offset,
-      });
+    const candidateDate =
+      localNow.plus({ days: offset });
 
     if (
-      weekdayName(date) ===
-      weekday
+      weekdayName(candidateDate)
+        .toLowerCase() !==
+      meeting.weekday.toLowerCase()
     ) {
-      dates.push(date);
+      continue;
+    }
+
+    const candidate =
+      DateTime.fromObject(
+        {
+          year: candidateDate.year,
+          month: candidateDate.month,
+          day: candidateDate.day,
+          hour: parsed.hour,
+          minute: parsed.minute,
+        },
+        {
+          zone: timezone,
+        }
+      );
+
+    if (!candidate.isValid) {
+      continue;
+    }
+
+    const candidateUtc =
+      candidate.toUTC();
+
+    if (
+      candidateUtc >= now &&
+      candidateUtc <= cutoff
+    ) {
+      return candidate;
     }
   }
 
-  return dates;
+  return null;
 }
 
-function meetingDateTime(
+function getMeetingEnd(
   meeting: GAMeeting,
-  calendarDate: DateTime,
-  timezone: string
-): DateTime | null {
-  if (!meeting.startTime) {
-    return null;
-  }
-
-  const parsed =
-    parseTime(
-      meeting.startTime
-    );
-
-  if (!parsed) {
-    return null;
-  }
-
-  return DateTime.fromObject(
-    {
-      year:
-        calendarDate.year,
-
-      month:
-        calendarDate.month,
-
-      day:
-        calendarDate.day,
-
-      hour:
-        parsed.hour,
-
-      minute:
-        parsed.minute,
-    },
-    {
-      zone: timezone,
-    }
-  );
-}
-
-function meetingEndDateTime(
-  meeting: GAMeeting,
-  calendarDate: DateTime,
-  timezone: string,
   start: DateTime
-): DateTime | null {
+) {
   if (!meeting.endTime) {
     return null;
   }
 
-  const parsed =
-    parseTime(
-      meeting.endTime
-    );
+  const parsed = parseTime(
+    meeting.endTime
+  );
 
   if (!parsed) {
     return null;
   }
 
-  let end =
-    DateTime.fromObject(
-      {
-        year:
-          calendarDate.year,
+  let end = DateTime.fromObject(
+    {
+      year: start.year,
+      month: start.month,
+      day: start.day,
+      hour: parsed.hour,
+      minute: parsed.minute,
+    },
+    {
+      zone: start.zoneName,
+    }
+  );
 
-        month:
-          calendarDate.month,
-
-        day:
-          calendarDate.day,
-
-        hour:
-          parsed.hour,
-
-        minute:
-          parsed.minute,
-      },
-      {
-        zone: timezone,
-      }
-    );
-
+  /*
+   * Handles a meeting such as:
+   *
+   * 11:30 PM - 12:30 AM
+   */
   if (end < start) {
-    end =
-      end.plus({
-        days: 1,
-      });
+    end = end.plus({ days: 1 });
   }
 
   return end;
@@ -260,177 +223,76 @@ function meetingEndDateTime(
 export async function getUpcomingMeetings(
   hours = 12
 ): Promise<UpcomingMeeting[]> {
-  const now =
-    DateTime.utc();
+  const now = DateTime.utc();
+  const cutoff = now.plus({ hours });
 
-  const cutoff =
-    now.plus({
-      hours,
-    });
-
-  /*
-   * THIS IS THE IMPORTANT CHANGE.
-   *
-   * Don't scrape four arbitrary
-   * weekdays.
-   *
-   * Determine which weekdays can
-   * actually occur somewhere in
-   * the US during this window.
-   */
-
-  const weekdays =
+  const relevantWeekdays =
     getRelevantWeekdays(
       now,
       cutoff
     );
 
-  console.log(
-    "Scraping GA weekdays:",
-    weekdays
-  );
+  const upcoming: UpcomingMeeting[] =
+    [];
 
-  /*
-   * Scrape only those days.
-   */
+  for (const meeting of STATIC_MEETINGS) {
+    if (
+      !meeting.weekday ||
+      !meeting.startTime
+    ) {
+      continue;
+    }
 
-  const results =
-    await Promise.all(
-      weekdays.map(
-        async (
-          weekday
-        ) => {
-          try {
-            const meetings =
-              await scrapeGAMeetingsForDay(
-                weekday
-              );
-
-            return {
-              weekday,
-              meetings,
-            };
-          } catch (error) {
-            /*
-             * One entire weekday
-             * failing should not
-             * destroy the others.
-             */
-            console.error(
-              `Failed to scrape ${weekday}`,
-              error
-            );
-
-            return {
-              weekday,
-              meetings:
-                [] as GAMeeting[],
-            };
-          }
-        }
+    if (
+      !relevantWeekdays.has(
+        meeting.weekday
       )
-    );
+    ) {
+      continue;
+    }
 
-  const upcoming:
-    UpcomingMeeting[] = [];
-
-  for (
-    const result
-    of results
-  ) {
-    const candidateDates =
-      candidateDatesForWeekday(
-        result.weekday,
-        now
+    const timezone =
+      getMeetingTimezone(
+        meeting.city,
+        meeting.state,
+        meeting.timezoneText
       );
 
-    for (
-      const meeting
-      of result.meetings
-    ) {
-      if (
-        !meeting.weekday ||
-        meeting.weekday.toLowerCase() !==
-          result.weekday.toLowerCase()
-      ) {
-        continue;
-      }
-
-      const timezone =
-        getMeetingTimezone(
-          meeting.city,
-          meeting.state,
-          meeting.timezoneText
-        );
-
-      if (!timezone) {
-        continue;
-      }
-
-      for (
-        const date
-        of candidateDates
-      ) {
-        const starts =
-          meetingDateTime(
-            meeting,
-            date,
-            timezone
-          );
-
-        if (
-          !starts ||
-          !starts.isValid
-        ) {
-          continue;
-        }
-
-        const startsUtc =
-          starts.toUTC();
-
-        if (
-          startsUtc < now ||
-          startsUtc > cutoff
-        ) {
-          continue;
-        }
-
-        const ends =
-          meetingEndDateTime(
-            meeting,
-            date,
-            timezone,
-            starts
-          );
-
-        upcoming.push({
-          ...meeting,
-
-          timezone,
-
-          startsAt:
-            startsUtc.toISO()!,
-
-          endsAt:
-            ends
-              ? ends
-                  .toUTC()
-                  .toISO()
-              : null,
-        });
-      }
+    if (!timezone) {
+      continue;
     }
+
+    const start =
+      getMeetingStart(
+        meeting,
+        timezone,
+        now,
+        cutoff
+      );
+
+    if (!start) {
+      continue;
+    }
+
+    const end =
+      getMeetingEnd(
+        meeting,
+        start
+      );
+
+    upcoming.push({
+      ...meeting,
+      timezone,
+      startsAt:
+        start.toUTC().toISO()!,
+      endsAt: end
+        ? end.toUTC().toISO()
+        : null,
+    });
   }
 
-  /*
-   * Chronological order.
-   */
-
   upcoming.sort(
-    (
-      a,
-      b
-    ) =>
+    (a, b) =>
       DateTime.fromISO(
         a.startsAt
       ).toMillis() -
@@ -440,27 +302,24 @@ export async function getUpcomingMeetings(
   );
 
   /*
-   * Remove accidental duplicates.
+   * sourceUrl + start time represents a particular
+   * occurrence of a particular GA listing.
+   *
+   * Do not dedupe by Zoom ID because separate GA
+   * listings can legitimately share a Zoom meeting.
    */
-
-  const seen =
-    new Set<string>();
+  const seen = new Set<string>();
 
   return upcoming.filter(
-    (
-      meeting
-    ) => {
+    (meeting) => {
       const key =
         `${meeting.sourceUrl}|${meeting.startsAt}`;
 
-      if (
-        seen.has(key)
-      ) {
+      if (seen.has(key)) {
         return false;
       }
 
       seen.add(key);
-
       return true;
     }
   );
