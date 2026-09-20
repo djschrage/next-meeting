@@ -204,7 +204,7 @@ function getMeetingEnd(
       minute: parsed.minute,
     },
     {
-      zone: start.zoneName,
+      zone: start.zoneName ?? "UTC",
     }
   );
 
