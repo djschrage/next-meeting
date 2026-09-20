@@ -11,21 +11,15 @@ type Meeting = {
   city: string | null;
   state: string | null;
   country: string | null;
-
   weekday: string | null;
-
   startTime: string | null;
   endTime: string | null;
-
   timezoneText: string | null;
   timezone: string;
-
   zoomId: string | null;
   password: string | null;
   zoomUrl: string | null;
-
   sourceUrl: string;
-
   startsAt: string;
   endsAt: string | null;
 };
@@ -33,11 +27,87 @@ type Meeting = {
 type ApiResponse = {
   success: boolean;
   generatedAt?: string;
+  mode?: "rolling" | "date";
   windowHours?: number;
+  date?: string;
+  timezone?: string;
   count?: number;
   meetings?: Meeting[];
   error?: string;
 };
+
+type DateOption = {
+  key: string;
+  label: string;
+  date: string | null;
+};
+
+function localDateString(
+  date: Date
+) {
+  const year =
+    date.getFullYear();
+
+  const month =
+    String(
+      date.getMonth() + 1
+    ).padStart(2, "0");
+
+  const day =
+    String(
+      date.getDate()
+    ).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
+
+function buildDateOptions(): DateOption[] {
+  const options: DateOption[] = [
+    {
+      key: "next-12",
+      label: "Next 12 hours",
+      date: null,
+    },
+  ];
+
+  const today = new Date();
+
+  for (let i = 0; i < 8; i++) {
+    const date = new Date(
+      today
+    );
+
+    date.setDate(
+      today.getDate() + i
+    );
+
+    let label: string;
+
+    if (i === 0) {
+      label = "Today";
+    } else if (i === 1) {
+      label = "Tomorrow";
+    } else {
+      label =
+        new Intl.DateTimeFormat(
+          undefined,
+          {
+            weekday: "short",
+            month: "short",
+            day: "numeric",
+          }
+        ).format(date);
+    }
+
+    options.push({
+      key: localDateString(date),
+      label,
+      date: localDateString(date),
+    });
+  }
+
+  return options;
+}
 
 function formatMeetingTime(
   iso: string
@@ -56,14 +126,11 @@ function formatMeetingTime(
 function formatDay(
   iso: string
 ) {
-  const date =
-    new Date(iso);
+  const date = new Date(iso);
 
-  const today =
-    new Date();
+  const today = new Date();
 
-  const tomorrow =
-    new Date();
+  const tomorrow = new Date();
 
   tomorrow.setDate(
     today.getDate() + 1
@@ -144,9 +211,7 @@ function getRelativeTime(
 function formatZoomId(
   zoomId: string
 ) {
-  if (
-    zoomId.length === 11
-  ) {
+  if (zoomId.length === 11) {
     return `${zoomId.slice(
       0,
       3
@@ -156,9 +221,7 @@ function formatZoomId(
     )} ${zoomId.slice(7)}`;
   }
 
-  if (
-    zoomId.length === 10
-  ) {
+  if (zoomId.length === 10) {
     return `${zoomId.slice(
       0,
       3
@@ -199,9 +262,7 @@ function hasEmbeddedPassword(
   }
 
   return (
-    zoomUrl.includes(
-      "pwd="
-    ) ||
+    zoomUrl.includes("pwd=") ||
     zoomUrl.includes(
       "passcode="
     )
@@ -209,95 +270,36 @@ function hasEmbeddedPassword(
 }
 
 export default function Home() {
-  const [
-    meetings,
-    setMeetings,
-  ] = useState<Meeting[]>(
-    []
-  );
+  const [meetings, setMeetings] =
+    useState<Meeting[]>([]);
+
+  const [loading, setLoading] =
+    useState(true);
+
+  const [error, setError] =
+    useState<string | null>(
+      null
+    );
+
+  const [now, setNow] =
+    useState(Date.now());
+
+  const [copied, setCopied] =
+    useState<string | null>(
+      null
+    );
 
   const [
-    loading,
-    setLoading,
-  ] = useState(true);
+    selectedOption,
+    setSelectedOption,
+  ] = useState("next-12");
 
-  const [
-    error,
-    setError,
-  ] = useState<
-    string | null
-  >(null);
-
-  const [
-    now,
-    setNow,
-  ] = useState(
-    Date.now()
-  );
-
-  const [
-    copied,
-    setCopied,
-  ] = useState<
-    string | null
-  >(null);
-
-  useEffect(() => {
-    async function load() {
-      try {
-        setLoading(true);
-
-        const response =
-          await fetch(
-            "/api/meetings?hours=12"
-          );
-
-        const data: ApiResponse =
-          await response.json();
-
-        if (
-          !response.ok ||
-          !data.success
-        ) {
-          throw new Error(
-            data.error ??
-              "Unable to load meetings."
-          );
-        }
-
-        setMeetings(
-          data.meetings ?? []
-        );
-      } catch (err) {
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Unable to load meetings."
-        );
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    load();
-  }, []);
-
-  useEffect(() => {
-    const interval =
-      window.setInterval(
-        () => {
-          setNow(
-            Date.now()
-          );
-        },
-        30000
-      );
-
-    return () =>
-      window.clearInterval(
-        interval
-      );
-  }, []);
+  const dateOptions =
+    useMemo(
+      () =>
+        buildDateOptions(),
+      []
+    );
 
   const localTimezone =
     useMemo(() => {
@@ -306,9 +308,101 @@ export default function Home() {
           .resolvedOptions()
           .timeZone;
       } catch {
-        return null;
+        return "UTC";
       }
     }, []);
+
+  const activeOption =
+    dateOptions.find(
+      (option) =>
+        option.key ===
+        selectedOption
+    ) ?? dateOptions[0];
+
+  async function loadMeetings(
+    option: DateOption
+  ) {
+    try {
+      setLoading(true);
+      setError(null);
+
+      let url =
+        "/api/meetings?hours=12";
+
+      if (option.date) {
+        const params =
+          new URLSearchParams({
+            date: option.date,
+            timezone:
+              localTimezone,
+          });
+
+        url =
+          `/api/meetings?${params.toString()}`;
+      }
+
+      const response =
+        await fetch(url);
+
+      const data: ApiResponse =
+        await response.json();
+
+      if (
+        !response.ok ||
+        !data.success
+      ) {
+        throw new Error(
+          data.error ??
+            "Unable to load meetings."
+        );
+      }
+
+      setMeetings(
+        data.meetings ?? []
+      );
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to load meetings."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    const option =
+      dateOptions.find(
+        (item) =>
+          item.key ===
+          selectedOption
+      );
+
+    if (option) {
+      loadMeetings(option);
+    }
+  }, [
+    selectedOption,
+    dateOptions,
+    localTimezone,
+  ]);
+
+  useEffect(() => {
+    const interval =
+      window.setInterval(
+        () =>
+          setNow(
+            Date.now()
+          ),
+        30000
+      );
+
+    return () =>
+      window.clearInterval(
+        interval
+      );
+  }, []);
 
   async function copyText(
     value: string,
@@ -322,37 +416,36 @@ export default function Home() {
       setCopied(key);
 
       window.setTimeout(
-        () => {
-          setCopied(null);
-        },
+        () =>
+          setCopied(null),
         1500
       );
     } catch {
-      // Clipboard may be blocked.
+      // Clipboard may be
+      // unavailable in some browsers.
     }
   }
 
-  let previousDay =
-    "";
+  const rollingMode =
+    selectedOption ===
+    "next-12";
+
+  let previousDay = "";
 
   return (
     <main className="page-shell">
       <section className="hero">
-        <div className="brand">
-          <div className="brand-mark">
-            12
-          </div>
-
+        <nav className="brand">
           <div>
             <div className="brand-name">
-              Next Meeting
+              NEXT MEETING
             </div>
 
             <div className="brand-subtitle">
-              Gamblers Anonymous
+              GAMBLERS ANONYMOUS
             </div>
           </div>
-        </div>
+        </nav>
 
         <div className="hero-content">
           <div className="eyebrow">
@@ -367,32 +460,40 @@ export default function Home() {
 
           <p className="hero-copy">
             Virtual Gamblers
-            Anonymous meetings
-            starting in the next
-            12 hours.
+            Anonymous meetings,
+            organized around your
+            local time.
           </p>
 
           <div className="local-time-note">
             <span className="status-dot" />
 
-            Times shown in your
-            local timezone
-            {localTimezone
-              ? ` · ${localTimezone}`
-              : ""}
+            <span>
+              Times shown in your
+              local timezone
+              {localTimezone
+                ? ` · ${localTimezone}`
+                : ""}
+            </span>
           </div>
         </div>
+
+        <div className="hero-accent" />
       </section>
 
       <section className="meetings-section">
-        <div className="section-header">
-          <div>
+        <div className="schedule-toolbar">
+          <div className="schedule-heading">
             <div className="section-kicker">
-              NEXT 12 HOURS
+              {rollingMode
+                ? "NEXT 12 HOURS"
+                : "MEETING SCHEDULE"}
             </div>
 
             <h2>
-              Upcoming meetings
+              {rollingMode
+                ? "Upcoming meetings"
+                : activeOption.label}
             </h2>
           </div>
 
@@ -408,6 +509,34 @@ export default function Home() {
             )}
         </div>
 
+        <div className="date-selector-wrap">
+          <div className="date-selector">
+            {dateOptions.map(
+              (option) => (
+                <button
+                  key={
+                    option.key
+                  }
+                  type="button"
+                  className={
+                    selectedOption ===
+                    option.key
+                      ? "date-option date-option-active"
+                      : "date-option"
+                  }
+                  onClick={() =>
+                    setSelectedOption(
+                      option.key
+                    )
+                  }
+                >
+                  {option.label}
+                </button>
+              )
+            )}
+          </div>
+        </div>
+
         {loading && (
           <div className="state-card">
             <div className="loader" />
@@ -419,7 +548,7 @@ export default function Home() {
 
               <p>
                 Checking the
-                upcoming schedule.
+                schedule.
               </p>
             </div>
           </div>
@@ -429,18 +558,18 @@ export default function Home() {
           <div className="state-card error-card">
             <div>
               <strong>
-                We couldn't load
-                the meetings.
+                We couldn't load the
+                meetings.
               </strong>
 
-              <p>
-                {error}
-              </p>
+              <p>{error}</p>
             </div>
 
             <button
               onClick={() =>
-                window.location.reload()
+                loadMeetings(
+                  activeOption
+                )
               }
             >
               Try again
@@ -456,16 +585,13 @@ export default function Home() {
               <div>
                 <strong>
                   No meetings found
-                  in the next 12
-                  hours.
+                  for this period.
                 </strong>
 
                 <p>
-                  Check again soon
-                  as the schedule
-                  changes
-                  throughout the
-                  day.
+                  Try another day or
+                  check the next
+                  12 hours.
                 </p>
               </div>
             </div>
@@ -497,12 +623,18 @@ export default function Home() {
                       now
                     );
 
-                  const urgent =
+                  const diff =
                     new Date(
                       meeting.startsAt
                     ).getTime() -
-                      now <=
-                    30 * 60 * 1000;
+                    now;
+
+                  const urgent =
+                    diff >= 0 &&
+                    diff <=
+                      30 *
+                        60 *
+                        1000;
 
                   const embeddedPassword =
                     hasEmbeddedPassword(
@@ -524,11 +656,11 @@ export default function Home() {
                       )}
 
                       <article
-                        className={`meeting-card ${
+                        className={
                           urgent
-                            ? "meeting-card-urgent"
-                            : ""
-                        }`}
+                            ? "meeting-card meeting-card-urgent"
+                            : "meeting-card"
+                        }
                       >
                         <div className="meeting-time-column">
                           <div className="meeting-time">
@@ -537,17 +669,19 @@ export default function Home() {
                             )}
                           </div>
 
-                          <div
-                            className={`relative-time ${
-                              urgent
-                                ? "relative-time-urgent"
-                                : ""
-                            }`}
-                          >
-                            {
-                              relative
-                            }
-                          </div>
+                          {rollingMode && (
+                            <div
+                              className={
+                                urgent
+                                  ? "relative-time relative-time-urgent"
+                                  : "relative-time"
+                              }
+                            >
+                              {
+                                relative
+                              }
+                            </div>
+                          )}
                         </div>
 
                         <div className="meeting-main">
@@ -576,7 +710,8 @@ export default function Home() {
                                 target="_blank"
                                 rel="noopener noreferrer"
                               >
-                                Join meeting
+                                Join
+                                meeting
                                 <span>
                                   ↗
                                 </span>
@@ -689,6 +824,7 @@ export default function Home() {
                               View
                               original
                               GA listing
+                              ↗
                             </a>
                           </div>
                         </div>
@@ -701,14 +837,17 @@ export default function Home() {
           )}
 
         <footer>
+          <div className="footer-mark">
+            NEXT MEETING
+          </div>
+
           <p>
             Meeting information
             comes from public
             Gamblers Anonymous
-            listings. Verify
-            details with the
-            original listing when
-            needed.
+            listings. Verify details
+            with the original
+            listing when needed.
           </p>
         </footer>
       </section>
